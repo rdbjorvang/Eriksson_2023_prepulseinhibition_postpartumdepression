@@ -1,0 +1,203 @@
+---
+title: "Association of pre-pulse inhibition and postpartum depression"
+author: "Richelle Björvang"
+date: '2023-11-10' 
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+Aim: To investigate association of pre-pulse inhibition (PPI) with depression at postpartum week 6   
+
+Outcome:  Postpartum depression at week 6 measured with Edinburgh Postnatal Depression Scale (EPDS) (Depressed >=12)  
+  
+Main exposure: PPI at 72, 74, 78 and 86 dB and global PPI  
+  
+Covariates: initial startle response value, maternal age, depression during pregnancy (week 32), pre-pregnancy BMI, education level (university vs non-university), employment (employed full-time or part-time vs unemployed/studying/parental leave/sick leave), anxiety at time of ASR measurement, PMS/PMDD (yes vs no), SSRI use in pregnancy (yes vs no), and sleep the night before ASR measurement  
+  
+Logistic regression models:    
+- Univariable    
+- Multivariable with and without interaction between depression during pregnancy and PPI  
+- Stratify according to depression at gestational week 32  
+- ROC curve for significant PPI  
+
+# Packages
+```{r, echo=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+```
+
+```{r error=F, message=F, warning=F}
+library(dplyr)
+library(tidyr)
+library(foreign)
+library(pROC)
+library(table1)
+library(cutpointr)
+library(gtsummary)
+```
+# Functions
+```{r}
+pvalue2groups.complete <- function(x, ...) {
+ x <- x[-length(x)]   # Remove "overall" group and missing EPDS
+  # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+# Check for normality using shapiro test
+      if (shapiro.test(y)$p.value > 0.05) {   
+              # For numeric variables, perform a standard 2-sample t-test
+              p <- t.test(y ~ g)$p.value
+    } else {
+              # For numeric variables, perform a standard 2-sample wilcox test
+            p <- wilcox.test(y ~ g)$p.value
+          }}  else {
+        # For categorical variables, perform a chi-squared test of independence
+        p <- fisher.test(table(y, g))$p.value
+    }
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+```
+
+# Datasets
+
+```{r error=FALSE, warning=FALSE}
+PPI <- foreign::read.spss("//argos.rudbeck.uu.se/MyGroups$/Bronze/KBH_Basic/Richelle Björvang/Datasets/PPI/PPIgravida arbetsfil 217_merge.sav", to.data.frame = TRUE, use.value.labels = TRUE)
+PPI <- as.data.frame(PPI)
+PPI <- PPI %>% mutate(globalPPI = 100*(PPIstartle-((PPI_1+PPI_2+PPI_3+PPI_4)/4))/PPIstartle) %>%
+filter(!CustomDataR %in% c(7810, 8795, 3898)) #has PPI with 0 values 
+
+PPI <- PPI %>% dplyr::select(CustomDataR, ppv6_EPDS_D_9R,v32_pos_el_MDD_mini,procent_hamning_PP4,  procent_hamning_PP3 , procent_hamning_PP2 , procent_hamning_PP1 , globalPPI, Startle1, Sömn_senaste_natten, MINI_ångest_nu, B_alder, v17_BMI_innan_R, V_17_PMS_PMDD_R, v32_NK_SSRI, v17_utbildning_R_01, v17_arbetardu_R)
+
+PPI$v32_pos_el_MDD_mini <- as.factor(PPI$v32_pos_el_MDD_mini)
+PPI$V_17_PMS_PMDD_R <- as.factor(PPI$V_17_PMS_PMDD_R)
+PPI$ppv6_EPDS_D_9R <- factor(PPI$ppv6_EPDS_D_9R, levels=c("0-11", "12-30"), labels=c("0", "1"))
+```
+
+# Table 1
+```{r}
+table1(~ v32_pos_el_MDD_mini + Sömn_senaste_natten + MINI_ångest_nu+ B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R + Startle1 + procent_hamning_PP1 + procent_hamning_PP2 + procent_hamning_PP3 + procent_hamning_PP4 + globalPPI | ppv6_EPDS_D_9R, data=PPI %>% filter(complete.cases(.)), overall="Total",  extra.col=list('P-value'=pvalue2groups.complete), extra.col.pos=3)
+```
+
+
+# Univariable
+```{r}
+PPI_complete <- PPI %>% filter(complete.cases(.))
+explanatory_vars <- colnames(PPI)[-c(1,2)]
+
+list.of.fits <- list()
+
+for (i in explanatory_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i)), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T) %>% bold_p()
+  }
+
+PPI_uv <- list.of.fits %>% tbl_stack()
+PPI_uv
+```
+
+
+# Adjusted - No interaction
+
+```{r}
+PPI_vars <- c("procent_hamning_PP1", "procent_hamning_PP2", "procent_hamning_PP3", "procent_hamning_PP4", "globalPPI")
+
+list.of.fits <- list()
+for (i in PPI_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i, "+v32_pos_el_MDD_mini + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R")), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T) %>% bold_p()
+  }
+
+PPI_noint <- tbl_merge(tbls = list(PPI_uv, list.of.fits[["procent_hamning_PP1"]], list.of.fits[["procent_hamning_PP2"]], list.of.fits[["procent_hamning_PP3"]], list.of.fits[["procent_hamning_PP4"]], list.of.fits[["globalPPI"]]),
+  tab_spanner = c("**Univariable**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>%  as_gt() %>% gt::tab_header(title = "No interaction between depression during pregnancy and PPI (Complete cases)")
+PPI_noint
+```
+
+# Adjusted with interaction
+
+```{r}
+list.of.fits <- list()
+for (i in PPI_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i, "*v32_pos_el_MDD_mini + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R")), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T) %>% bold_p()
+  }
+
+PPI_int <- tbl_merge(tbls = list(PPI_uv, list.of.fits[["procent_hamning_PP1"]], list.of.fits[["procent_hamning_PP2"]], list.of.fits[["procent_hamning_PP3"]], list.of.fits[["procent_hamning_PP4"]], list.of.fits[["globalPPI"]]),
+  tab_spanner = c("**Univariable**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>%  as_gt() %>% gt::tab_header(title = "With interaction between depression during pregnancy and PPI (Complete cases)")
+PPI_int
+```
+
+
+# Stratified analysis
+
+## No depression during week 32
+
+```{r}
+PP1 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP1 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP2 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP2 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP3 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP3 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PPg <- glm(ppv6_EPDS_D_9R~globalPPI + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+
+PP1_tab <- tbl_regression(PP1, exponentiate = T) %>% bold_p()
+PP2_tab <- tbl_regression(PP2, exponentiate = T) %>% bold_p()
+PP3_tab <- tbl_regression(PP3, exponentiate = T) %>% bold_p()
+PP4_tab <- tbl_regression(PP4, exponentiate = T) %>% bold_p()
+PPg_tab <- tbl_regression(PPg, exponentiate = T) %>% bold_p()
+
+tbl_merge(
+  tbls = list(PPI_uv, PP1_tab, PP2_tab,PP3_tab,PP4_tab,PPg_tab),                          
+  tab_spanner = c("**Univariable**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>% 
+  as_gt() %>% gt::tab_header(title = "Women WITHOUT depression during pregnancy")
+
+```
+
+
+## With depression at week 32
+```{r results='asis'}
+PP1 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP1 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP2 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP2 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP3 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP3 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4  + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PPg <- glm(ppv6_EPDS_D_9R~globalPPI + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+
+PP1_tab <- tbl_regression(PP1, exponentiate = T) %>% bold_p()
+PP2_tab <- tbl_regression(PP2, exponentiate = T) %>% bold_p()
+PP3_tab <- tbl_regression(PP3, exponentiate = T) %>% bold_p()
+PP4_tab <- tbl_regression(PP4, exponentiate = T) %>% bold_p()
+PPg_tab <- tbl_regression(PPg, exponentiate = T) %>% bold_p()
+
+tbl_merge(
+  tbls = list(PPI_uv, PP1_tab, PP2_tab,PP3_tab,PP4_tab,PPg_tab),
+  tab_spanner = c("**Univariable**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>% 
+  as_gt() %>% gt::tab_header(title = "Women WITH depression during pregnancy")
+```
+
+# ROC
+```{r}
+c4 <- glm(ppv6_EPDS_D_9R~ procent_hamning_PP4, family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+
+PP0 <- glm(ppv6_EPDS_D_9R~ Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP0.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values)
+
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP4.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values)
+
+roc.test(PP0.roc, PP4.roc, method="bootstrap")
+
+par(pty="s")
+pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values, plot=T, percent=T, legacy.axes=T, col="blue", lwd=4, print.auc=T, xlab="False Positive Rate", ylab="True Positive Rate")
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values, add=T, percent=T, col="black", lwd=4, print.auc=T, print.auc.y=45)
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values, add=T, percent=T, col="orange", lwd=4, print.auc=T, print.auc.y=40)
+legend("bottomright", legend=c("Adjusted PPI at 86 dB", "Covariates only", "Crude PPI at 86 dB"), col=c("blue", "black", "orange"), lwd=4)
+```
+
+# Environment
+
+```{r}
+sessionInfo()
+```
+
