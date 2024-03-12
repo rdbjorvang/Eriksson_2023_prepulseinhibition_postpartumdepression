@@ -1,0 +1,434 @@
+---
+title: "Association of pre-pulse inhibition and postpartum depression"
+author: "Richelle Björvang"
+date: '2024-02-06' 
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+Aim: To investigate association of pre-pulse inhibition (PPI) with depression at postpartum week 6   
+
+Outcome:  Postpartum depression at week 6 measured with Edinburgh Postnatal Depression Scale (EPDS) (Depressed >=12)  
+  
+Main exposure: PPI at 72, 74, 78 and 86 dB and global PPI  
+  
+Covariates: initial startle response value, maternal age, depression during pregnancy (week 32), pre-pregnancy BMI, education level (university vs non-university), employment (employed full-time or part-time vs unemployed/studying/parental leave/sick leave), anxiety at time of ASR measurement, PMS/PMDD (yes vs no), SSRI use in pregnancy (yes vs no), and sleep the night before ASR measurement  
+  
+Logistic regression models:    
+- Univariable    
+- Multivariable with and without interaction between depression during pregnancy and PPI  
+- Stratify according to depression at gestational week 32  
+- ROC curve for significant PPI  
+ 
+Changes:  
+- add model of covariates only (with Startle1)
+- add test statistic and effect size for table 1
+- change values up to 1 decimal place for table 1 continuous variables to see the difference (do not round up)
+- add table1 for stratified to pregnancy depression to get an overview  
+- add bar graph for PPI for those with 
+- revise p value to be calculated with fisher if EXPECTED cell > 5, not actual count
+- added coordinates for ROC curve
+
+# Packages
+```{r, echo=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+```
+
+```{r error=F, message=F, warning=F}
+library(dplyr)
+library(tidyr)
+library(foreign)
+library(pROC)
+library(table1)
+library(cutpointr)
+library(gtsummary)
+library(rstatix)
+library(ggplot2)
+library(tibble)
+library(psych)
+library(cutpointr)
+library(kableExtra)
+library(ggpubr)
+```
+# Functions
+```{r}
+my.render.cont <- function(x) {
+    with(stats.default(x), 
+         c("",
+           
+          "Mean (SD)" = sprintf("%s (%s)",
+                                round_pad(MEAN, 1),
+                                round_pad(SD, 1)),
+         
+          "Median (Min, Max)" = sprintf("%s (%s, %s)",
+                                       round_pad(MEDIAN, 1), 
+                                       round_pad(MIN, 1), 
+                                       round_pad(MAX, 1)))
+    )
+}
+
+
+pvalue2groups.complete <- function(x, ...) {
+ x <- x[-length(x)]   # Remove "overall" group and missing EPDS
+  # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+# Check for normality using shapiro test
+      if (shapiro.test(y)$p.value > 0.05) {   
+              # For numeric variables, perform a standard 2-sample t-test
+              p <- t.test(y ~ g)$p.value
+    } else {
+              # For numeric variables, perform a standard 2-sample wilcox test
+            p <- wilcox.test(y ~ g)$p.value
+   }}  else {
+      if (any(chisq.test(table(y, g))$expected<5)==TRUE) { 
+        p <- fisher.test(table(y, g), workspace = 2e8)$p.value}
+      else {
+              # For categorical variables, perform a chi-squared test of independence
+        p <- chisq.test(table(y, g))$p.value
+    }}
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+
+statistics <- function(x, ...) {
+ x <- x[-length(x)]   # Remove "overall" group and missing EPDS
+  # Construct vectors of data y, and groups (strata) g
+    y <- unlist(x)
+    g <- factor(rep(1:length(x), times=sapply(x, length)))
+    if (is.numeric(y)) {
+# Check for normality using shapiro test
+      if (shapiro.test(y)$p.value > 0.05) {   
+              # For numeric variables, perform a standard 2-sample t-test
+              p <- t.test(y ~ g)$statistic
+    } else {
+              # For numeric variables, perform a standard 2-sample wilcox test
+            p <- wilcox.test(y ~ g)$statistic
+   }}  else {
+      if (any(chisq.test(table(y, g))$expected<5)==TRUE) { 
+        p <- NA}
+      else {
+              # For categorical variables, perform a chi-squared test of independence
+        p <- chisq.test(table(y, g))$statistic
+    }}
+    # Format the p-value, using an HTML entity for the less-than sign.
+    # The initial empty string places the output on the line below the variable label.
+    c("", sub("<", "&lt;", format.pval(p, digits=3, eps=0.001)))
+}
+```
+
+# Datasets
+
+```{r error=FALSE, warning=FALSE}
+PPI <- foreign::read.spss("//argos.rudbeck.uu.se/MyGroups$/Bronze/KBH_Basic/Richelle Björvang/Datasets/PPI/PPIgravida arbetsfil 217_merge.sav", to.data.frame = TRUE, use.value.labels = TRUE)
+PPI <- as.data.frame(PPI)
+PPI <- PPI %>% mutate(globalPPI = 100*(PPIstartle-((PPI_1+PPI_2+PPI_3+PPI_4)/4))/PPIstartle) %>%
+filter(!CustomDataR %in% c(7810, 8795, 3898)) #has PPI with 0 values 
+
+PPI$v32_pos_el_MDD_mini <- as.factor(PPI$v32_pos_el_MDD_mini)
+PPI$V_17_PMS_PMDD_R <- as.factor(PPI$V_17_PMS_PMDD_R)
+PPI$v17_utbildning_R_01 <- factor(PPI$v17_utbildning_R_01, levels=c("University", "Else"))
+PPI$ppv6_EPDS_D_9R <- factor(PPI$ppv6_EPDS_D_9R, levels=c("0-11", "12-30"), labels=c("0", "1"))
+
+PPI_raw <- PPI
+#PPI <- PPI_raw
+PPI <- PPI %>% dplyr::select(CustomDataR, ppv6_EPDS_D_9R,v32_pos_el_MDD_mini,procent_hamning_PP4,  procent_hamning_PP3 , procent_hamning_PP2 , procent_hamning_PP1 , globalPPI, Startle1, Sömn_senaste_natten, MINI_ångest_nu, B_alder, v17_BMI_innan_R, V_17_PMS_PMDD_R, v32_NK_SSRI, v17_utbildning_R_01, v17_arbetardu_R)
+PPI <- PPI %>% filter(complete.cases(.))
+```
+
+
+# Table 1
+## All
+```{r}
+table1(~ B_alder + v17_BMI_innan_R  + v17_utbildning_R_01 + v17_arbetardu_R + v32_pos_el_MDD_mini+MINI_ångest_nu+ V_17_PMS_PMDD_R + v32_NK_SSRI  + Sömn_senaste_natten + Startle1 + procent_hamning_PP1 + procent_hamning_PP2 + procent_hamning_PP3 + procent_hamning_PP4 + globalPPI| ppv6_EPDS_D_9R, data=PPI %>% filter(complete.cases(.)), overall="Total",  extra.col=list( 'Statistics'=statistics,  'P-value'=pvalue2groups.complete),  extra.col.pos=c(3,4),   render.continuous=my.render.cont)
+
+cohens_d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+cohen.d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(v17_BMI_innan_R~ppv6_EPDS_D_9R, data=PPI)
+phi(table(PPI$v17_utbildning_R_01, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v17_arbetardu_R, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v32_pos_el_MDD_mini, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$MINI_ångest_nu, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$V_17_PMS_PMDD_R, PPI$ppv6_EPDS_D_9R))
+fisher_test(table(PPI$v32_NK_SSRI, PPI$ppv6_EPDS_D_9R)) #what is effect size for Fisher test?
+wilcox_effsize(Sömn_senaste_natten~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(Startle1~ppv6_EPDS_D_9R, data=PPI)
+```
+
+## No pregnancy depression
+```{r}
+table1(~  B_alder + v17_BMI_innan_R  + v17_utbildning_R_01 + v17_arbetardu_R + v32_pos_el_MDD_mini+MINI_ångest_nu+ V_17_PMS_PMDD_R + v32_NK_SSRI  + Sömn_senaste_natten + Startle1 + procent_hamning_PP1 + procent_hamning_PP2 + procent_hamning_PP3 + procent_hamning_PP4 + globalPPI | ppv6_EPDS_D_9R, data=PPI %>% filter(complete.cases(.), v32_pos_el_MDD_mini==0), overall="Total",  extra.col=list( 'Statistics'=statistics,  'P-value'=pvalue2groups.complete),  extra.col.pos=c(3,4),   render.continuous=my.render.cont)
+
+cohens_d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+cohen.d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(v17_BMI_innan_R~ppv6_EPDS_D_9R, data=PPI)
+phi(table(PPI$v17_utbildning_R_01, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v17_arbetardu_R, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v32_pos_el_MDD_mini, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$MINI_ångest_nu, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$V_17_PMS_PMDD_R, PPI$ppv6_EPDS_D_9R))
+fisher_test(table(PPI$v32_NK_SSRI, PPI$ppv6_EPDS_D_9R)) #what is effect size for Fisher test?
+wilcox_effsize(Sömn_senaste_natten~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(Startle1~ppv6_EPDS_D_9R, data=PPI)
+```
+
+## With pregnancy depression
+```{r}
+table1(~  B_alder + v17_BMI_innan_R  + v17_utbildning_R_01 + v17_arbetardu_R + v32_pos_el_MDD_mini+MINI_ångest_nu+ V_17_PMS_PMDD_R + v32_NK_SSRI  + Sömn_senaste_natten + Startle1 + procent_hamning_PP1 + procent_hamning_PP2 + procent_hamning_PP3 + procent_hamning_PP4 + globalPPI | ppv6_EPDS_D_9R, data=PPI %>% filter(complete.cases(.), v32_pos_el_MDD_mini==1), overall="Total",  extra.col=list( 'Statistics'=statistics,  'P-value'=pvalue2groups.complete),  extra.col.pos=c(3,4),   render.continuous=my.render.cont)
+
+cohens_d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+cohen.d(B_alder~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(v17_BMI_innan_R~ppv6_EPDS_D_9R, data=PPI)
+phi(table(PPI$v17_utbildning_R_01, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v17_arbetardu_R, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$v32_pos_el_MDD_mini, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$MINI_ångest_nu, PPI$ppv6_EPDS_D_9R))
+phi(table(PPI$V_17_PMS_PMDD_R, PPI$ppv6_EPDS_D_9R))
+fisher_test(table(PPI$v32_NK_SSRI, PPI$ppv6_EPDS_D_9R)) #what is effect size for Fisher test?
+wilcox_effsize(Sömn_senaste_natten~ppv6_EPDS_D_9R, data=PPI)
+wilcox_effsize(Startle1~ppv6_EPDS_D_9R, data=PPI)
+```
+# Univariable
+```{r}
+PPI_complete <- PPI %>% filter(complete.cases(.))
+explanatory_vars <- colnames(PPI)[-c(1,2)]
+
+list.of.fits <- list()
+
+for (i in explanatory_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i)), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+  }
+
+PPI_uv <- list.of.fits %>% tbl_stack()
+PPI_uv
+```
+
+
+# Adjusted - No interaction
+
+```{r}
+PPI_vars <- c("procent_hamning_PP1", "procent_hamning_PP2", "procent_hamning_PP3", "procent_hamning_PP4", "globalPPI")
+
+list.of.fits <- list()
+for (i in PPI_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i, "+v32_pos_el_MDD_mini + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R")), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+  }
+
+list.of.fits[["PP0"]] <- glm(ppv6_EPDS_D_9R ~ v32_pos_el_MDD_mini + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R, family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+
+PPI_noint <- tbl_merge(tbls = list(PPI_uv, list.of.fits[["PP0"]] , list.of.fits[["procent_hamning_PP1"]], list.of.fits[["procent_hamning_PP2"]], list.of.fits[["procent_hamning_PP3"]], list.of.fits[["procent_hamning_PP4"]], list.of.fits[["globalPPI"]]),
+  tab_spanner = c("**Univariable**","**Covariates only**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>%  as_gt() %>% gt::tab_header(title = "No interaction between depression during pregnancy and PPI (Complete cases)")
+PPI_noint
+```
+
+# Adjusted with interaction
+
+```{r}
+#list.of.fits <- list()
+for (i in PPI_vars) {
+    list.of.fits[[i]] <- glm(as.formula(paste("ppv6_EPDS_D_9R ~ ",i, "*v32_pos_el_MDD_mini + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R")), family="binomial", data=PPI_complete) %>% tbl_regression(exponentiate=T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+  }
+
+PPI_int <- tbl_merge(tbls = list(PPI_uv, list.of.fits[["PP0"]] , list.of.fits[["procent_hamning_PP1"]], list.of.fits[["procent_hamning_PP2"]], list.of.fits[["procent_hamning_PP3"]], list.of.fits[["procent_hamning_PP4"]], list.of.fits[["globalPPI"]]),
+  tab_spanner = c("**Univariable**", "**Covariates only**","**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>%  as_gt() %>% gt::tab_header(title = "With interaction between depression during pregnancy and PPI (Complete cases)")
+
+PPI_int
+```
+
+
+# Stratified analysis
+
+## No depression during week 32
+
+```{r}
+PP0 <- glm(ppv6_EPDS_D_9R~Startle1 +Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP1 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP1 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP2 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP2 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP3 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP3 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PPg <- glm(ppv6_EPDS_D_9R~globalPPI + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+
+PP0_tab <- tbl_regression(PP0, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p() 
+PP1_tab <- tbl_regression(PP1, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP2_tab <- tbl_regression(PP2, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP3_tab <- tbl_regression(PP3, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP4_tab <- tbl_regression(PP4, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PPg_tab <- tbl_regression(PPg, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+
+tbl_merge(
+  tbls = list(PPI_uv, PP0_tab, PP1_tab, PP2_tab,PP3_tab,PP4_tab,PPg_tab),                          
+  tab_spanner = c("**Univariable**","**Covariates only**",  "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>% 
+  as_gt() %>% gt::tab_header(title = "Women WITHOUT depression during pregnancy")
+
+```
+
+
+## With depression at week 32
+```{r results='asis'}
+PP0 <- glm(ppv6_EPDS_D_9R~Startle1 +Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP1 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP1 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP2 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP2 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP3 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP3 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4  + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+PPg <- glm(ppv6_EPDS_D_9R~globalPPI + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="1"))
+
+PP0_tab <- tbl_regression(PP0, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP1_tab <- tbl_regression(PP1, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP2_tab <- tbl_regression(PP2, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP3_tab <- tbl_regression(PP3, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PP4_tab <- tbl_regression(PP4, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+PPg_tab <- tbl_regression(PPg, exponentiate = T, estimate_fun = purrr::partial(style_ratio, digits = 4),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 4)) %>% bold_p()
+
+tbl_merge(
+  tbls = list(PPI_uv, PP0_tab, PP1_tab, PP2_tab,PP3_tab,PP4_tab,PPg_tab),
+  tab_spanner = c("**Univariable**","**Covariates only**", "**PPI 1**", "**PPI 2**", "**PPI 3**", "**PPI 4**", "**PPI Global**")) %>% 
+  as_gt() %>% gt::tab_header(title = "Women WITH depression during pregnancy")
+exp(confint.default(PP4))
+```
+
+# ROC
+## With startle1 in covariates only
+```{r}
+c4 <- glm(ppv6_EPDS_D_9R~ procent_hamning_PP4, family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+c4.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values)
+summary(c4)
+
+PP0 <- glm(ppv6_EPDS_D_9R~Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP0.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values)
+
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP4.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values)
+
+roc.test(PP0.roc, PP4.roc, method="bootstrap")
+roc.test(PP0.roc, c4.roc, method="bootstrap")
+roc.test(PP4.roc, c4.roc, method="bootstrap")
+
+par(pty="s")
+pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values,  plot=T, percent=T, col="orange", lwd=4, print.auc=T, legacy.axes=TRUE, xlab="False Positive Rate", ylab="True Positive Rate",cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values, percent=T,add=T, legacy.axes=T, col="blue", lwd=4, print.auc=T, xlab="False Positive Rate", ylab="True Positive Rate", print.auc.y=45,cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values, add=T, percent=T, col="black", lwd=4, print.auc=T, print.auc.y=40,cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+legend("bottomright", legend=c("Crude PPI at 86 dB", "Adjusted PPI at 86 dB", "Covariates only"), col=c("orange","blue", "black"), lwd=4, bty="n", cex=1.5)
+```
+
+## Coordinates
+```{r}
+model2 <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values,  plot=T, percent=T, col="orange", lwd=4, print.auc=T, legacy.axes=TRUE, xlab="False Positive Rate", ylab="True Positive Rate", print.thres="best", print.thres.best.method="closest.topleft", direction="<")
+
+coords(model2)  %>% as.data.frame(.)%>% rename(Cutoff_model=threshold, Specificity=specificity, Sensitivity=sensitivity) %>%  mutate(across(colnames(.),\(x) round(x, 5)), Cutoff_procenthamning=(Cutoff_model-(coef(c4)[1]))/coef(c4)[2])  %>% select(Cutoff_model, Cutoff_procenthamning,Specificity, Sensitivity) %>% kable(., caption="Specificity and sensitivity at different cut off scores") %>% kable_styling(bootstrap_options = c("striped", "bordered"), full_width = T)
+```
+
+## Without startle1 in covariates only
+```{r}
+c4 <- glm(ppv6_EPDS_D_9R~ procent_hamning_PP4, family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+summary(c4)
+c4.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values)
+
+PP0 <- glm(ppv6_EPDS_D_9R~Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP0.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values)
+
+PP4 <- glm(ppv6_EPDS_D_9R~procent_hamning_PP4 + Startle1 + Sömn_senaste_natten + MINI_ångest_nu + B_alder + v17_BMI_innan_R + V_17_PMS_PMDD_R + v32_NK_SSRI + v17_utbildning_R_01 + v17_arbetardu_R , family="binomial", data=PPI_complete %>% filter(v32_pos_el_MDD_mini=="0"))
+PP4.roc <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values)
+
+roc.test(PP0.roc, PP4.roc, method="bootstrap")
+roc.test(PP0.roc, c4.roc, method="bootstrap")
+roc.test(PP4.roc, c4.roc, method="bootstrap")
+
+par(pty="s")
+pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values,  plot=T, percent=T, col="orange", lwd=4, print.auc=T, legacy.axes=TRUE, xlab="False Positive Rate", ylab="True Positive Rate",cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP4$fitted.values, percent=T,add=T, legacy.axes=T, col="blue", lwd=4, print.auc=T, xlab="False Positive Rate", ylab="True Positive Rate", print.auc.y=45,cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+plot.roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], PP0$fitted.values, add=T, percent=T, col="black", lwd=4, print.auc=T, print.auc.y=40,cex.lab=1.5, cex.axis=1.5, print.auc.cex=1.5)
+legend("bottomright", legend=c("Crude PPI at 86 dB", "Adjusted PPI at 86 dB", "Covariates only"), col=c("orange","blue", "black"), lwd=4, bty="n", cex=1.5)
+
+
+model2 <- pROC::roc(PPI_complete$ppv6_EPDS_D_9R[PPI_complete$v32_pos_el_MDD_mini=="0"], c4$fitted.values,  plot=T, percent=T, col="orange", lwd=4, print.auc=T, legacy.axes=TRUE, xlab="False Positive Rate", ylab="True Positive Rate", print.thres="best", print.thres.best.method="closest.topleft", direction="<")
+
+coords(model2)  %>% as.data.frame(.)%>% rename(Cutoff=threshold, Specificity=specificity, Sensitivity=sensitivity) %>%  mutate(across(colnames(.),\(x) round(x, 5)))  %>% select(Cutoff, Specificity, Sensitivity) %>% kable(., caption="Specificity and sensitivity at different cut off scores") %>% kable_styling(bootstrap_options = c("striped", "bordered"), full_width = T)
+```
+# Figure
+```{r}
+#Boxplot
+plot1 <- PPI_raw %>% filter(CustomDataR %in% PPI$CustomDataR, v32_pos_el_MDD_mini=="0") %>% select(Startle1, PPI_1, PPI_2, PPI_3, PPI_4, ppv6_EPDS_D_9R) %>% gather(., key="PPI", value="value",-ppv6_EPDS_D_9R) %>% group_by(PPI,ppv6_EPDS_D_9R) %>% mutate(PPI=recode(PPI,"Startle1"= "Baseline", "PPI_1"="72",  "PPI_2"="74", "PPI_3"="78", "PPI_4"="86"), ppv6_EPDS_D_9R=recode(ppv6_EPDS_D_9R, "0" = "Non-PPD", "1" ="PPD")) %>% filter(PPI=="Baseline") %>% droplevels() %>%
+   ggplot(., aes(x=PPI, y=value, fill=ppv6_EPDS_D_9R)) +
+  geom_boxplot() +
+  stat_compare_means(label = "p.signif",hide.ns = TRUE) +
+ stat_summary(fun = "mean",
+               geom = "point", color="blue",
+               shape = 15, size = 3,
+               position = position_dodge(width = 0.8))+
+   labs(x="", y = "Startle Magnitude, \u03BCV", fill="")+
+   theme(text=element_text(size=19),
+               axis.text.x=element_text(color="black"),
+               axis.text.y=element_text(color="black"),
+               strip.background = element_rect(colour=NA, fill=NA),
+               plot.background = element_blank(),
+               panel.grid.major = element_blank(),
+               panel.grid.minor = element_blank(),
+               panel.border = element_blank(),
+               axis.line.x = element_line(linewidth=0.4),
+               axis.line.y = element_line(linewidth=0.4),
+               panel.background = element_blank(),
+               legend.position = "none",
+                legend.key=element_rect(fill="white")) +
+  scale_x_discrete(limits=c("Baseline")) +
+     scale_fill_manual(values=c('#999999','#E69F00'))
+
+
+plot2 <- PPI %>% filter(v32_pos_el_MDD_mini=="0") %>% select(procent_hamning_PP1, procent_hamning_PP2, procent_hamning_PP3, procent_hamning_PP4, globalPPI, ppv6_EPDS_D_9R) %>% gather(., key="PPI", value="value",-ppv6_EPDS_D_9R) %>% group_by(PPI,ppv6_EPDS_D_9R) %>% mutate(PPI=recode(PPI, "procent_hamning_PP1"="72",  "procent_hamning_PP2"="74", "procent_hamning_PP3"="78", "procent_hamning_PP4"="86", "globalPPI"="Global"), ppv6_EPDS_D_9R=recode(ppv6_EPDS_D_9R, "0" = "Non-PPD", "1" ="PPD")) %>%
+   ggplot(., aes(y=value, x=PPI, fill=ppv6_EPDS_D_9R)) +
+  geom_boxplot() +
+    stat_compare_means(label = "p.signif",hide.ns = TRUE, cex=8, color="red") +
+   labs(x="Pre-pulse Intensity, dB", y = "% PPI", fill="")+
+    geom_hline(yintercept=0, linetype="dashed") +
+  stat_summary(fun = "mean",
+               geom = "point", color="blue",
+               shape = 15, size = 3,
+               position = position_dodge(width = 0.8))+
+   theme(text=element_text(size=19),
+               axis.text.x=element_text(color="black"),
+               axis.text.y=element_text(color="black"),
+               strip.background = element_rect(colour=NA, fill=NA),
+               plot.background = element_blank(),
+               panel.grid.major = element_blank(),
+               panel.grid.minor = element_blank(),
+               panel.border = element_blank(),
+               axis.line.x = element_line(linewidth=0.4),
+               axis.line.y = element_line(linewidth=0.4),
+               panel.background = element_blank(),
+               legend.position = "right",
+              legend.key = element_blank(),
+         legend.key.size = unit(2,"line"))+
+     scale_fill_manual(values=c('#999999','#E69F00'))
+
+cowplot::plot_grid(plot1, plot2, labels = c("A","B"), label_size=20, rel_widths = c(1,3.3))
+```
+
+# Environment
+
+```{r}
+sessionInfo()
+```
+
